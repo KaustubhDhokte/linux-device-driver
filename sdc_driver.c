@@ -9,8 +9,8 @@
 #include <linux/sched.h>  // for task_struct
 #include <linux/delay.h>
 #include <linux/workqueue.h>
-
-
+#include "cache_manager.h"
+#define MAX_BUFFER_SIZE 4096
 
 static int major_num = 0;
 static int logical_block_size = 512;
@@ -19,6 +19,14 @@ int threshold_io_count = 0;
 module_param(threshold_io_count, int, 0);
 
 static struct request_queue *req_queue;
+struct kmem_cache *cache;
+
+typedef struct sdc_device_request{
+  sector_t sector;
+  unsigned long nsect;
+  char buffer[MAX_BUFFER_SIZE];
+}sdc_device_request;
+
 static struct sdc_device {
 	unsigned long size;
 	spinlock_t lock;
@@ -26,7 +34,12 @@ static struct sdc_device {
 	struct gendisk *gd;
 } device;
 
-
+static void initialize_request(void *buffer)
+{
+    sdc_device_request *io = (sdc_device_request *)buffer;
+    io->sector = 0;
+    io->nsect = 0;
+}
 
 static void sdc_request(struct request_queue *q) {
         struct request *req;
@@ -94,6 +107,7 @@ static int __init sdc_init(void) {
         set_capacity(device.gd, nsectors);
         device.gd->queue = req_queue;
         add_disk(device.gd);
+	cache = create_cache("sdc_request_cache", sizeof(sdc_device_request), 0, (SLAB_RECLAIM_ACCOUNT|SLAB_PANIC|SLAB_MEM_SPREAD|SLAB_NOLEAKTRACE), initialize_request);
         printk (KERN_INFO "init successful\n");
         return 0;
 
@@ -108,11 +122,13 @@ out:
 
 static void __exit sdc_exit(void)
 {
+	int ret;
         del_gendisk(device.gd);
         put_disk(device.gd);
         unregister_blkdev(major_num, "sdc");
         blk_cleanup_queue(req_queue);
         vfree(device.data);
+	ret = destroy_cache(cache);
 	printk(KERN_INFO "All cleanup done \n");
 }
 
