@@ -1,5 +1,5 @@
 obj-m := sdc_driver.o
-module_sdc-objs :=  sdc_driver.o cache_manager.o
+#obj-m := cache_manager.o
 
 all:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
