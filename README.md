@@ -12,7 +12,9 @@ The driver exports memory and IO requests related information in procfs.
 Module Usage:
 1. Build the module
       #> make clean && make all
-Sample OP:    
+      
+Sample OP:
+
       make[1]: Entering directory `/usr/src/linux-headers-3.13.0-32-generic'
       make[1]: Leaving directory `/usr/src/linux-headers-3.13.0-32-generic'
       make -C /lib/modules/3.13.0-32-generic/build M=/home/ubuntu/try/linux-device-driver modules
@@ -27,13 +29,14 @@ Sample OP:
 2. Load the module
 
       #> insmod sdc_driver.ko THRESHOLD_IO_CNT=5
-    
+  
     This will create the device entry /dev/sdc0
     
 3. See module logs
 
       #> dmesg
-      
+
+
 Procfs Usage with sample output:
 1. Total memory currently used by the driver:
     
@@ -43,14 +46,14 @@ Procfs Usage with sample output:
       Total memory taken by driver: 32776 Bytes
       root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver# 
       
-2. Forcefully flush the in memory data to the disk
+2. Forcefully flush the in memory data to the disk:
 
     #> echo 1 > /proc/sdc_flush_io
 
       root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver# echo 1 > /proc/sdc_flush_io
       root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver# 
 
-3. Number of batches of IOs are flushed to the disk by now.
+3. Number of batches of IOs are flushed to the disk by now:
 
     #> cat /proc/sdc_flushed_batches 
     
@@ -58,8 +61,8 @@ Procfs Usage with sample output:
     Batches of IO's fulshed: 1
     root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver#
     
-4. Total amount of data that is in memory and need to flush to the disk
+4. Total amount of data that is in memory and need to flush to the disk:
 
     root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver# cat /proc/sdc_inmemory_data 
-    Total in-memory data : 12336 Bytes 
-    root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver# 
+    Total in-memory data : 12336 Bytes
+    root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver#
