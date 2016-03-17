@@ -13,6 +13,7 @@
 #include <linux/kfifo.h>
 #include "cache_manager.h"
 #define MAX_BUFFER_SIZE 4096
+#define MAXLEN 256
 
 static int major_num = 0;
 static int logical_block_size = 512;
@@ -41,13 +42,14 @@ static struct sdc_device {
 	struct gendisk *gd;
 } device;
 
-struct driver_stats {
+struct driver_info {
   ssize_t driver_memory; // total memory taken by driver
   ssize_t total_in_memory; // total in memory data
   int batches_flushed; // batches of IO's flushed
   spinlock_t lock; // lock to update fields inside stuct
 };
 
+struct driver_info stats;
 
 static void initialize_request(void *buffer)
 {
@@ -83,6 +85,10 @@ void flush_io(struct work_struct *work){
   }
   kmem_cache_free(cache, req);
   kfree(work);
+  spin_lock(&(stats.lock));
+  stats.batches_flushed ++;
+  spin_unlock(&(stats.lock));
+  write_io = 0;
   printk(KERN_INFO "All queued IOs flushed to the disk \n");
 }
 
@@ -124,7 +130,7 @@ static void sdc_request(struct request_queue *q) {
 			queue_work(workq, work);
 			printk(KERN_INFO "Work added to the workqueue\n");
 		    }
-		    write_io = 0;
+		   // write_io = 0;
 		  }
 		  kmem_cache_free(cache, new_sdc_request);
 		}
@@ -137,8 +143,31 @@ static void sdc_request(struct request_queue *q) {
 
 ssize_t proc_read(struct file *filp, char *buf, size_t count, loff_t *offp)
 {
-    return 0;
+    char *data = NULL;
+    int data_len = 0;
+    ssize_t size = 0;
+    static char op_buf[MAXLEN];
+    data = PDE_DATA(file_inode(filp));
+    if(!(data)){
+	printk(KERN_INFO "Null data");
+	return 0;
+    }
+    if (!strncmp(data, proc_priv_data[1], strlen(proc_priv_data[1]))) {
+	sprintf(op_buf, "Batches of IO's fulshed: %d\n", stats.batches_flushed);
+	data_len = strlen(op_buf);
+	if(count > data_len) {
+	  count = data_len;
+	}
+    count = simple_read_from_buffer(buf, count, offp, op_buf, data_len);
+    }
+    else {
+	/*Do nothing*/
+	count = -EINVAL;
+    }    
+    return count;
 }
+
+
 ssize_t proc_write(struct file *filp, const char *buf, size_t count, loff_t *offp)
 {
     char *data = NULL;
@@ -224,6 +253,11 @@ static int __init sdc_init(void) {
 	workq = create_workqueue("my_queue");
 	
 	create_proc_entries();
+	
+	stats.driver_memory = 0;
+	stats.total_in_memory = 0;
+	stats.batches_flushed = 0;
+	spin_lock_init(&stats.lock);
 	
         device.size = nsectors * logical_block_size;
         spin_lock_init(&device.lock);
