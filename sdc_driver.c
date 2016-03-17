@@ -156,6 +156,9 @@ static void sdc_request(struct request_queue *q) {
 		  stats.driver_memory -= sizeof(sdc_device_request);
 		  spin_unlock(&(stats.lock));
 		}
+		else{
+		  printk(KERN_INFO "Received New Read request\n");
+		}
 		/*Fetch new request*/
                 if ( ! __blk_end_request_cur(req, 0) ) {
                         req = blk_fetch_request(q);
@@ -391,8 +394,9 @@ static void __exit sdc_exit(void)
 	spin_unlock(&(stats.lock));
 	/* Destroy the cache*/
 	kmem_cache_destroy(cache);
+	/*Remove proc entries*/
 	remove_proc_entries();
-	printk(KERN_INFO "All cleanup done \n");
+	printk(KERN_INFO "SDC Driver uninitialized \n");
 }
 
 MODULE_LICENSE("GPL");
