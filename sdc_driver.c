@@ -37,6 +37,7 @@ static void initialize_request(void *buffer)
 ssize_t total_in_memory_data(void)
 {
   spin_lock(&(stats.lock));
+  /** In cache memory = Total size - available memory*/
   stats.total_in_memory = kfifo_size(&cached_requests_fifo) - kfifo_avail(&cached_requests_fifo) ;
   spin_unlock(&(stats.lock));
   return stats.total_in_memory;
@@ -57,36 +58,48 @@ static void sdc_device_write(struct sdc_device *dev, sdc_device_request *req){
 }
 
 void flush_io(struct work_struct *work){
-  int ret;
+  int return_value;
   sdc_device_request *req;
+  /** Check requests are queued if any, else simply return*/
+  if (kfifo_is_empty(&cached_requests_fifo)){
+    printk(KERN_WARNING "No pending requests to be flushed\n");
+    return;
+  }
+  /** Allocate memory for popped out request*/
   req = (sdc_device_request *)kmem_cache_alloc(cache, GFP_KERNEL);
+  /** Update driver stats*/
   spin_lock(&(stats.lock));
   stats.driver_memory += sizeof(sdc_device_request);
   spin_unlock(&(stats.lock));
-  printk(KERN_INFO "Flushing queued IOs to disk...\n");
-  ret = kfifo_out(&cached_requests_fifo, req, sizeof(sdc_device_request));
-  while (ret)
+  
+  printk(KERN_INFO "Flushing cached IOs to disk...\n");
+  /** Flush all requests in the queue*/
+  return_value = kfifo_out(&cached_requests_fifo, req, sizeof(sdc_device_request));
+  while (return_value)
   {
       sdc_device_write(&device, req);
-      ret = kfifo_out(&cached_requests_fifo, req, sizeof(sdc_device_request));
+      return_value = kfifo_out(&cached_requests_fifo, req, sizeof(sdc_device_request));
   }
   kmem_cache_free(cache, req);
   kfree(work);
-  
+  /** Update driver stats*/
   spin_lock(&(stats.lock));
   stats.driver_memory -= sizeof(sdc_device_request);
   stats.driver_memory -= sizeof(struct work_struct);
   stats.batches_flushed ++;
   spin_unlock(&(stats.lock));
+  
   write_io = 0;
-  printk(KERN_INFO "All queued IOs flushed to the disk \n");
+  printk(KERN_INFO "All cached IOs flushed to the disk \n");
 }
 
 static void sdc_request(struct request_queue *q) {
+	/*Request object*/
         struct request *req;
-	int ret;
+	int return_value;
 	struct work_struct *work;
 	sdc_device_request *new_sdc_request;
+	/*Fetch first scheduled request*/
         req = blk_fetch_request(q);
         while (req != NULL) {
                 if (req == NULL || (req->cmd_type != REQ_TYPE_FS)) {
@@ -94,47 +107,56 @@ static void sdc_request(struct request_queue *q) {
                         __blk_end_request_all(req, -EIO);
                         continue;
                 }
-                printk(KERN_DEBUG "New request \n");
+                /** Process if it is a write request*/
 		if (rq_data_dir(req)){
+		  printk(KERN_DEBUG "Processing new write request\n");
+		  /** Allocate new object from the cache*/
 		  new_sdc_request = (sdc_device_request *)kmem_cache_alloc(cache, GFP_KERNEL);
 		  if (!new_sdc_request)
 		  {
-		    printk(KERN_ALERT "Failed to allocate new object from cache");
+		    printk(KERN_ALERT "Failed to allocate new object from cache\n");
 		    return;
 		  }
-		  
+		  /** Update driver stats*/
 		  spin_lock(&(stats.lock));
 		  stats.driver_memory += sizeof(sdc_device_request);
 		  spin_unlock(&(stats.lock));
 
-		  printk(KERN_DEBUG "New object allocated from cache");
+		  printk(KERN_DEBUG "New object allocated from cache\n");
+		  /** Get target sector number*/
 		  new_sdc_request->sector = blk_rq_pos(req);
+		  /** Get number of sectors*/
 		  new_sdc_request->nsect = blk_rq_cur_sectors(req);
+		  /** Get the contents*/
 		  memcpy(new_sdc_request->buffer, req->buffer, new_sdc_request->nsect*logical_block_size);
+		  /** Check if threshold is reached*/
 		  if (write_io < THRESHOLD_IO_CNT){
-		    /*Queue the request*/
-		    ret = kfifo_in(&cached_requests_fifo, new_sdc_request, sizeof(sdc_device_request));
+		    /*Enqueue the request*/
+		    return_value = kfifo_in(&cached_requests_fifo, new_sdc_request, sizeof(sdc_device_request));
 		    write_io ++;
-		    printk(KERN_INFO "Request enqueued.: %d\n", write_io);
+		    printk(KERN_INFO "Write Request cached.\n");
 		  }
 		  if (write_io == THRESHOLD_IO_CNT){
 		    /*flush the IOs if IOs are reached to their threshold value*/
 		    work = (struct work_struct *)kmalloc(sizeof(struct work_struct), GFP_KERNEL);
 		    if (work) {
+			/** Update the driver stats*/
 			spin_lock(&(stats.lock));
 			stats.driver_memory += sizeof(struct work_struct);
 			spin_unlock(&(stats.lock));
+			/** Init and schedule the IOs to flush in a workqueue*/
 			INIT_WORK(work, flush_io);
 			queue_work(workq, work);
-			printk(KERN_INFO "Work added to the workqueue\n");
+			printk(KERN_INFO "Cached write requests reached to its threshold value. : [%d]\n Work added to the workqueue\n", THRESHOLD_IO_CNT);
 		    }
 		  }
 		  kmem_cache_free(cache, new_sdc_request);
+		  /** Update driver status*/
 		  spin_lock(&(stats.lock));
 		  stats.driver_memory -= sizeof(sdc_device_request);
 		  spin_unlock(&(stats.lock));
 		}
-		
+		/*Fetch new request*/
                 if ( ! __blk_end_request_cur(req, 0) ) {
                         req = blk_fetch_request(q);
                 }
@@ -142,69 +164,65 @@ static void sdc_request(struct request_queue *q) {
 }
 
 
-ssize_t proc_read(struct file *filp, char *buf, size_t count, loff_t *offp)
+ssize_t proc_read(struct file *filp, char *buffer, size_t count, loff_t *offp)
 {
     char *data = NULL;
     int data_len = 0;
     ssize_t size = 0;
-    static char op_buf[MAXLEN];
+    static char op_buffer[MAXLEN];
     data = PDE_DATA(file_inode(filp));
     if(!(data)){
 	printk(KERN_INFO "Null data");
 	return 0;
     }
-     /* proc_1: Displays total amount of memory used by driver */
+     /* Displays total amount of memory used by driver */
     if (!strncmp(data, proc_priv_data[0], strlen(proc_priv_data[0]))) {
 	spin_lock(&(stats.lock));
-	sprintf(op_buf, "Total memory taken by driver: %ld Bytes\n", stats.driver_memory);
+	sprintf(op_buffer, "Total memory taken by driver: %ld Bytes\n", stats.driver_memory);
 	spin_unlock(&(stats.lock));
-	data_len = strlen(op_buf);
-	if(count > data_len) {
-	    count = data_len;
-	}
-	count = simple_read_from_buffer(buf, count, offp, op_buf, data_len);
     } 
+    /*Display batches of IOs flushed to the disk*/
     else if (!strncmp(data, proc_priv_data[1], strlen(proc_priv_data[1]))) {
-	sprintf(op_buf, "Batches of IO's fulshed: %d\n", stats.batches_flushed);
-	data_len = strlen(op_buf);
-	if(count > data_len) {
-	  count = data_len;
-	}
-    count = simple_read_from_buffer(buf, count, offp, op_buf, data_len);
+	spin_lock(&(stats.lock));
+	sprintf(op_buffer, "Batches of IO's fulshed: %d\n", stats.batches_flushed);
+	spin_unlock(&(stats.lock));
     }
+    /* Displays total in-memory data*/
     else if (!strncmp(data, proc_priv_data[3], strlen(proc_priv_data[3]))) {
 	size = total_in_memory_data();
-	sprintf(op_buf, "Total in-memory data : %ld Bytes \n",(long) size);
-	data_len = strlen(op_buf);
-	if(count > data_len) {
-	    count = data_len;
-	}
-	count = simple_read_from_buffer(buf, count, offp, op_buf,
-	data_len);
-}
+	sprintf(op_buffer, "Total in-memory data : %ld Bytes \n",(long) size);
+    }
     else {
 	/*Do nothing*/
 	count = -EINVAL;
-    }    
+	return count;
+    }
+    data_len = strlen(op_buffer);
+    if(count > data_len) {
+	  count = data_len;
+    }
+    count = simple_read_from_buffer(buffer, count, offp, op_buffer, data_len);
     return count;
 }
 
 
-ssize_t proc_write(struct file *filp, const char *buf, size_t count, loff_t *offp)
+ssize_t proc_write(struct file *filp, const char *buffer, size_t count, loff_t *offp)
 {
     char *data = NULL;
     char str[3];
     struct work_struct *work;
+    
     data = PDE_DATA(file_inode(filp));
     if(!(data)){
       printk(KERN_INFO "Null data");
       return 0;
     }
     if (!strncmp(data, proc_priv_data[2], strlen(proc_priv_data[2]))) {
-      count = simple_write_to_buffer(str, 1, offp, buf, count) + 1;
+      count = simple_write_to_buffer(str, 1, offp, buffer, count) + 1;
       str[1] = '\0';
       if (!strcmp(str, "1"))
       {
+	printk(KERN_INFO "Processing new request to flush the cached IO\n");
 	work = (struct work_struct *)kmalloc(sizeof(struct work_struct), GFP_KERNEL);
 	if (work) {
 	    spin_lock(&(stats.lock));
@@ -224,7 +242,7 @@ ssize_t proc_write(struct file *filp, const char *buf, size_t count, loff_t *off
     }
     return count;
 }
-
+/* Register proc entries operations*/
 static const struct file_operations proc_fops = {
   .read = proc_read,
   .write = proc_write
@@ -260,11 +278,13 @@ static struct block_device_operations sdc_ops = {
 
 static int __init sdc_init(void) {
   
-	int ret;
+	int return_value;
+	/* initialize driver stats */
 	stats.driver_memory = 0;
 	stats.total_in_memory = 0;
 	stats.batches_flushed = 0;
 	spin_lock_init(&stats.lock);
+	/* Create cache using slab allocator*/
 	cache = kmem_cache_create("sdc_request_cache", sizeof(sdc_device_request), 0, (SLAB_RECLAIM_ACCOUNT|SLAB_PANIC|SLAB_MEM_SPREAD|SLAB_NOLEAKTRACE), initialize_request);
 	if (cache == NULL)
 	{
@@ -272,48 +292,49 @@ static int __init sdc_init(void) {
 	  return -ENOMEM;
 	}
 	printk(KERN_INFO "Cache created for structure sdc_request_cache \n");
-	ret = kfifo_alloc(&cached_requests_fifo, THRESHOLD_IO_CNT*sizeof(sdc_device_request), GFP_KERNEL);
+	/* Allocate a queue to cache the requests*/
+	return_value = kfifo_alloc(&cached_requests_fifo, THRESHOLD_IO_CNT*sizeof(sdc_device_request), GFP_KERNEL);
+	if(return_value)
+	{
+	  printk(KERN_NOTICE "Failed to allocate kfifo object\n");
+	  return return_value;
+	}
+	/* Update driver statistics*/
 	spin_lock(&(stats.lock));
 	stats.driver_memory += kfifo_size(&cached_requests_fifo);
 	spin_unlock(&(stats.lock));
-	if(ret)
-	{
-	  printk(KERN_NOTICE "Failed to allocate kfifo object\n");
-	  return ret;
-	}
+	
 	printk(KERN_INFO "kfifo object allocated successfully \n");
+	
+	/* Create workqueue*/
 	workq = create_workqueue("my_queue");
-	
+	/* Create proc entries*/
 	create_proc_entries();
-	
-        device.size = nsectors * logical_block_size;
-        spin_lock_init(&device.lock);
-        device.data = vmalloc(device.size);
+	/* Initialize device*/
+        device.size = nsectors * logical_block_size; //Initialize device size
+        spin_lock_init(&device.lock); // Initialize device lock
+        device.data = vmalloc(device.size); // Allocate data block
         if (device.data == NULL)
                 return -ENOMEM;
+	/* Update driver stats*/
 	spin_lock(&(stats.lock));
 	stats.driver_memory += sizeof(device.size);
 	spin_unlock(&(stats.lock));
+	
 	printk(KERN_DEBUG "Device size set to: %lu \n", device.size);
-        /*
-         * Get a request queue.
-         */
+        /* Get a request queue.*/
         req_queue = blk_init_queue(sdc_request, &device.lock);
 	if (req_queue == NULL)
 		goto out;
         blk_queue_logical_block_size(req_queue, logical_block_size);
-        /*
-         * Get registered.
-         */
+        /* Register block device*/
         major_num = register_blkdev(major_num, "sdc");
         if (major_num < 0) {
                 printk(KERN_WARNING "sdc: unable to get major number\n");
                 goto out;
         }
         printk(KERN_DEBUG "Device registered\n");
-        /*
-         * And the gendisk structure.
-         */
+        /* Innitialize gendisk structure.*/
         device.gd = alloc_disk(16);
         if (!device.gd)
                 goto out_unregister;
@@ -325,14 +346,16 @@ static int __init sdc_init(void) {
         set_capacity(device.gd, nsectors);
         device.gd->queue = req_queue;
         add_disk(device.gd);
-	printk (KERN_INFO "init successful\n");
+	printk (KERN_INFO "All driver initialization operations successful\n");
         return 0;
 
 out_unregister:
         unregister_blkdev(major_num, "sdc");
 	printk(KERN_NOTICE "Block device unregistered \n");
 out:
+	/* Free device memory*/
         vfree(device.data);
+	/* Update driver stats*/
 	spin_lock(&(stats.lock));
 	stats.driver_memory -= sizeof(device.size);
 	spin_unlock(&(stats.lock));
@@ -347,20 +370,26 @@ out:
 
 static void __exit sdc_exit(void)
 {
+	/* Remove gendisk*/
         del_gendisk(device.gd);
         put_disk(device.gd);
+	/* Unregister block device*/
         unregister_blkdev(major_num, "sdc");
+	/* Clean the request queue*/
         blk_cleanup_queue(req_queue);
+	/* Free the device memory*/
         vfree(device.data);
+	/* Update driver stats*/
 	spin_lock(&(stats.lock));
 	stats.driver_memory -= sizeof(device.size);
 	spin_unlock(&(stats.lock));
-	
+	/* Uninitialize the cache queue*/
 	kfifo_free(&cached_requests_fifo);
+	/* Update driver stats*/
 	spin_lock(&(stats.lock));
 	stats.driver_memory -= kfifo_size(&cached_requests_fifo);
 	spin_unlock(&(stats.lock));
-	
+	/* Destroy the cache*/
 	kmem_cache_destroy(cache);
 	remove_proc_entries();
 	printk(KERN_INFO "All cleanup done \n");
