@@ -38,6 +38,7 @@ Sample OP:
 
 
 Procfs Usage with sample output:
+
 1. Total memory currently used by the driver:
     
     #> cat /proc/sdc_memory_consumption
@@ -57,12 +58,14 @@ Procfs Usage with sample output:
 
     #> cat /proc/sdc_flushed_batches 
     
-    root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver# cat /proc/sdc_flushed_batches 
-    Batches of IO's fulshed: 1
-    root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver#
+      root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver# cat /proc/sdc_flushed_batches 
+      Batches of IO's fulshed: 1
+      root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver#
     
 4. Total amount of data that is in memory and need to flush to the disk:
 
-    root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver# cat /proc/sdc_inmemory_data 
-    Total in-memory data : 12336 Bytes
-    root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver#
+    #> cat /proc/sdc_inmemory_data
+
+      root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver# cat /proc/sdc_inmemory_data 
+      Total in-memory data : 12336 Bytes
+      root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver#
