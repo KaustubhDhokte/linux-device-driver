@@ -10,7 +10,9 @@ Workqueues implicitly carry out this task in a separate kernel thread and the mo
 The driver exports memory and IO requests related information in procfs.
 
 Module Usage:
-1. Build the module
+
+1. Build the module:
+
       #> make clean && make all
       
 Sample OP:
@@ -26,13 +28,13 @@ Sample OP:
       LD [M]  /home/ubuntu/try/linux-device-driver/sdc_driver.ko
       make[1]: Leaving directory `/usr/src/linux-headers-3.13.0-32-generic'
 
-2. Load the module
+2. Load the module:
 
       #> insmod sdc_driver.ko THRESHOLD_IO_CNT=5
   
     This will create the device entry /dev/sdc0
     
-3. See module logs
+3. See module logs:
 
       #> dmesg
 
@@ -42,23 +44,25 @@ Procfs Usage with sample output:
 1. Total memory currently used by the driver:
     
     #> cat /proc/sdc_memory_consumption
-
+    
       root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver# cat /proc/sdc_memory_consumption
       Total memory taken by driver: 32776 Bytes
       root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver# 
-      
+     
+     
 2. Forcefully flush the in memory data to the disk:
 
     #> echo 1 > /proc/sdc_flush_io
-
+    
       root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver# echo 1 > /proc/sdc_flush_io
       root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver# 
+     
 
 3. Number of batches of IOs are flushed to the disk by now:
 
-    #> cat /proc/sdc_flushed_batches 
-    
-      root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver# cat /proc/sdc_flushed_batches 
+    #> cat /proc/sdc_flushed_batches
+        
+      root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver# cat /proc/sdc_flushed_batches
       Batches of IO's fulshed: 1
       root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver#
     
@@ -66,6 +70,6 @@ Procfs Usage with sample output:
 
     #> cat /proc/sdc_inmemory_data
 
-      root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver# cat /proc/sdc_inmemory_data 
+      root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver# cat /proc/sdc_inmemory_data
       Total in-memory data : 12336 Bytes
       root@ubuntu-VirtualBox:/home/ubuntu/try/linux-device-driver#
