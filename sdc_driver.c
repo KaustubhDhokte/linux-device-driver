@@ -1,51 +1,30 @@
-#include <linux/module.h>
-#include <linux/kernel.h> /* printk() */
-#include <linux/proc_fs.h>
-/* Device specific files*/
-#include <linux/genhd.h>
-#include <linux/blkdev.h>
+#include "sdc_driver.h"
 
-#include <linux/slab.h>
-#include <linux/workqueue.h>
-#include <linux/kfifo.h>
-#include "cache_manager.h"
-#define MAX_BUFFER_SIZE 4096
-#define MAXLEN 256
-
+/**Device statistics*/
 static int major_num = 0;
 static int logical_block_size = 512;
-static int nsectors = 1024; /* How big the drive is */
+static int nsectors = 1024;
+
+/** Module parameter*/
 static unsigned int THRESHOLD_IO_CNT = 10;
 module_param(THRESHOLD_IO_CNT, int, 0);
+
+/** Count of current write requests cached in the memory*/
 static unsigned int write_io = 0;
+/** Proc entry titles*/
 static char proc_priv_data[4][24] = {"sdc_memory_consumption", "sdc_flushed_batches", "sdc_flush_io", "sdc_inmemory_data"};
 
+/** proc entry*/
 struct proc_dir_entry *proc;
+/** Incoming request queues*/
 static struct request_queue *req_queue;
+/** slab allocator cache*/
 struct kmem_cache *cache;
+/** Queue to cache the write requests*/
 struct kfifo cached_requests_fifo;
+/** WorkQueue structure*/
 static struct workqueue_struct *workq;
-
-typedef struct sdc_device_request{
-  sector_t sector;
-  unsigned long nsect;
-  char buffer[MAX_BUFFER_SIZE];
-}sdc_device_request;
-
-static struct sdc_device {
-	unsigned long size;
-	spinlock_t lock;
-	u8 *data;
-	struct gendisk *gd;
-} device;
-
-struct driver_info {
-  ssize_t driver_memory; // total memory taken by driver
-  ssize_t total_in_memory; // total in memory data
-  int batches_flushed; // batches of IO's flushed
-  spinlock_t lock; // lock to update fields inside stuct
-};
-
+/** Driver metadata*/
 struct driver_info stats;
 
 static void initialize_request(void *buffer)
