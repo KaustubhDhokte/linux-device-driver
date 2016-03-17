@@ -1,6 +1,6 @@
 #include <linux/module.h>
 #include <linux/kernel.h> /* printk() */
-
+#include <linux/proc_fs.h>
 /* Device specific files*/
 #include <linux/genhd.h>
 #include <linux/blkdev.h>
@@ -20,7 +20,9 @@ static int nsectors = 1024; /* How big the drive is */
 int threshold_io_count = 10;
 module_param(threshold_io_count, int, 0);
 static unsigned int write_io = 0;
+static char proc_priv_data[4][8] = {"proc_1", "proc_2", "proc_3", "proc_4"};
 
+struct proc_dir_entry *proc;
 static struct request_queue *req_queue;
 struct kmem_cache *cache;
 struct kfifo cached_requests_fifo;
@@ -38,6 +40,13 @@ static struct sdc_device {
 	u8 *data;
 	struct gendisk *gd;
 } device;
+
+struct driver_stats {
+  ssize_t driver_memory; // total memory taken by driver
+  ssize_t total_in_memory; // total in memory data
+  int batches_flushed; // batches of IO's flushed
+  spinlock_t lock; // lock to update fields inside stuct
+};
 
 
 static void initialize_request(void *buffer)
@@ -65,23 +74,24 @@ void flush_io(struct work_struct *work){
   int ret;
   sdc_device_request *req;
   req = (sdc_device_request *)kmem_cache_alloc(cache, GFP_KERNEL);
+  printk(KERN_INFO "Flushing queued IOs to disk...\n");
   ret = kfifo_out(&cached_requests_fifo, req, sizeof(sdc_device_request));
   while (ret)
   {
       sdc_device_write(&device, req);
       ret = kfifo_out(&cached_requests_fifo, req, sizeof(sdc_device_request));
-      printk(KERN_INFO "Request popped from kfifo\n");
   }
   kmem_cache_free(cache, req);
-  printk(KERN_INFO "All queued requests flushed \n");
+  kfree(work);
+  printk(KERN_INFO "All queued IOs flushed to the disk \n");
 }
 
 static void sdc_request(struct request_queue *q) {
         struct request *req;
 	int ret;
 	struct work_struct *work;
-        req = blk_fetch_request(q);
 	sdc_device_request *new_sdc_request;
+        req = blk_fetch_request(q);
         while (req != NULL) {
                 if (req == NULL || (req->cmd_type != REQ_TYPE_FS)) {
                         printk (KERN_NOTICE "Skip non-CMD request\n");
@@ -103,8 +113,8 @@ static void sdc_request(struct request_queue *q) {
 		  if (write_io < threshold_io_count){
 		    /*Queue the request*/
 		    ret = kfifo_in(&cached_requests_fifo, new_sdc_request, sizeof(sdc_device_request));
-		    printk(KERN_INFO "Request enqueued.: %d\n", write_io);
 		    write_io ++;
+		    printk(KERN_INFO "Request enqueued.: %d\n", write_io);
 		  }
 		  if (write_io == threshold_io_count){
 		    /*flush the IOs if IOs are reached to their threshold value*/
@@ -116,12 +126,75 @@ static void sdc_request(struct request_queue *q) {
 		    }
 		    write_io = 0;
 		  }
+		  kmem_cache_free(cache, new_sdc_request);
 		}
 		
                 if ( ! __blk_end_request_cur(req, 0) ) {
                         req = blk_fetch_request(q);
                 }
         }
+}
+
+ssize_t proc_read(struct file *filp, char *buf, size_t count, loff_t *offp)
+{
+    return 0;
+}
+ssize_t proc_write(struct file *filp, const char *buf, size_t count, loff_t *offp)
+{
+    char *data = NULL;
+    char str[3];
+    struct work_struct *work;
+    data = PDE_DATA(file_inode(filp));
+    if(!(data)){
+      printk(KERN_INFO "Null data");
+      return 0;
+    }
+    if (!strncmp(data, proc_priv_data[2], strlen(proc_priv_data[2]))) {
+      count = simple_write_to_buffer(str, 1, offp, buf, count) + 1;
+      str[1] = '\0';
+      if (!strcmp(str, "1"))
+      {
+	work = (struct work_struct *)kmalloc(sizeof(struct work_struct), GFP_KERNEL);
+	if (work) {
+	    INIT_WORK(work, flush_io);
+	    queue_work(workq, work);
+	    printk(KERN_INFO "Work added to the workqueue\n");
+	}
+      }
+      else
+	count = -EINVAL;
+    }
+    else {
+      /*Do nothing*/
+	count = -EINVAL;
+    }
+    return count;
+}
+
+static const struct file_operations proc_fops = {
+  .read = proc_read,
+  .write = proc_write
+};
+
+/**
+* Create proc entries and add data to inode's priv field
+*/
+void create_proc_entries(void)
+{
+    proc = proc_create_data("proc_1", S_IRWXU | S_IRWXG | S_IRWXO, NULL, &proc_fops, proc_priv_data[0]);
+    proc = proc_create_data("proc_2", S_IRWXU | S_IRWXG | S_IRWXO, NULL, &proc_fops,proc_priv_data[1]);
+    proc = proc_create_data("proc_3", S_IRWXU | S_IRWXG | S_IRWXO, NULL, &proc_fops,proc_priv_data[2]);
+    proc = proc_create_data("proc_4", S_IRWXU | S_IRWXG | S_IRWXO, NULL, &proc_fops,proc_priv_data[3]);
+}
+/**
+* Removing proc entries
+*/
+void remove_proc_entries(void)
+{
+    remove_proc_entry("proc_1", NULL);
+    remove_proc_entry("proc_2", NULL);
+    remove_proc_entry("proc_3", NULL);
+    remove_proc_entry("proc_4", NULL);
 }
 
 /*
@@ -149,6 +222,8 @@ static int __init sdc_init(void) {
 	}
 	printk(KERN_INFO "kfifo object allocated successfully \n");
 	workq = create_workqueue("my_queue");
+	
+	create_proc_entries();
 	
         device.size = nsectors * logical_block_size;
         spin_lock_init(&device.lock);
@@ -206,6 +281,7 @@ static void __exit sdc_exit(void)
         blk_cleanup_queue(req_queue);
         vfree(device.data);
 	kmem_cache_destroy(cache);
+	remove_proc_entries();
 	printk(KERN_INFO "All cleanup done \n");
 }
 
